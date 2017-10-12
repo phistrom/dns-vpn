@@ -74,19 +74,34 @@
 
 
     # Work with only the peers and policies we are supposed to
-    :local policies [/ip ipsec policy find comment~"^dns-vpn,"]
-    :local peers [/ip ipsec peer find comment~"^dns-vpn,"]
+    :local policies [/ip ipsec policy find comment~"^dns-vpn"]
+    :local peers [/ip ipsec peer find comment~"^dns-vpn"]
 
     # change SA Destination Address for all policies to the IP of the
     # domain name in their comment
     :foreach policy in=$policies do={
         :local policyComment [/ip ipsec policy get $policy comment]
         :local domainName [$xxDNSVPNfuncComment2Host $policyComment]
-        :local ipAddr [:resolve $domainName]
-        :local curAddr [/ip ipsec policy get $policy sa-dst-address]
-        :if ($curAddr != $ipAddr) do={
-            /ip ipsec policy set $policy sa-dst-address=$ipAddr
-            :log info "DNS-VPN: IPsec policy '$policyComment' was changed from $curAddr to $ipAddr"
+        :local ipAddr
+        :local problem false
+        :do {
+            :set ipAddr [:resolve $domainName]
+        } on-error={
+            :if (!($policyComment ~ "DNS Problem")) do={
+                :log error "DNS-VPN: Check IPsec Policy comment or your DNS settings. Could not resolve '$domainName' to an IP address."
+                /ip ipsec policy set $policy comment="dns-vpn DNS Problem,$domainName"
+            }
+            :set problem true
+        }
+        :if (!$problem) do={
+            :if ($policyComment ~ "DNS Problem") do={
+                /ip ipsec policy set $policy comment="dns-vpn,$domainName"
+            }
+            :local curAddr [/ip ipsec policy get $policy sa-dst-address]
+            :if ($curAddr != $ipAddr) do={
+                /ip ipsec policy set $policy sa-dst-address=$ipAddr
+                :log info "DNS-VPN: IPsec policy '$policyComment' was changed from $curAddr to $ipAddr"
+            }
         }
     }
     
@@ -95,18 +110,36 @@
     :foreach peer in=$peers do={
         :local peerComment [/ip ipsec peer get $peer comment]
         :local domainName [$xxDNSVPNfuncComment2Host $peerComment]
-        :local curAddr [/ip ipsec peer get $peer address]
         
-        # for some reason, IPsec peer's address value is an IP prefix as a string
-        # this chops off the /32 at the end, giving us just the IP
-        :if ($curAddr ~ "/[[:digit:]]+\$") do={
-            :set curAddr [:pick $curAddr 0 [:find $curAddr "/"]]
+        :local ipAddr
+        :local problem false
+        :do {
+            :set ipAddr [:resolve $domainName]
+        } on-error={
+            :if (!($peerComment ~ "DNS Problem")) do={
+                :log error "DNS-VPN: Check IPsec Peer comment or your DNS settings. Could not resolve '$domainName' to an IP address."
+                /ip ipsec peer set $peer comment="dns-vpn DNS Problem,$domainName"
+            }
+            :set problem true
         }
         
-        :local ipAddr [:resolve $domainName]
-        :if ($curAddr != $ipAddr) do={
-            /ip ipsec peer set $peer address=$ipAddr
-            :log info "DNS-VPN: IPsec peer '$peerComment' was changed from $curAddr to $ipAddr"
+        :if (!$problem) do={
+            :local curAddr [/ip ipsec peer get $peer address]
+            
+            # for some reason, IPsec peer's address value is an IP prefix as a string
+            # this chops off the /32 at the end, giving us just the IP
+            :if ($curAddr ~ "/[[:digit:]]+\$") do={
+                :set curAddr [:pick $curAddr 0 [:find $curAddr "/"]]
+            }
+            
+            :if ($curAddr != $ipAddr) do={
+                /ip ipsec peer set $peer address=$ipAddr
+                :log info "DNS-VPN: IPsec peer '$peerComment' was changed from $curAddr to $ipAddr"
+            }
+            
+            :if ($peerComment ~ "DNS Problem") do={
+                /ip ipsec peer set $peer comment="dns-vpn,$domainName"
+            }
         }
     }
     
