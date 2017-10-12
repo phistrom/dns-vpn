@@ -1,0 +1,115 @@
+##########################################################
+#
+#   Script Name: DNS VPN
+#   Version: 2017-10-11
+#   Author: Phillip Stromberg
+#   Purpose: Allows using domain names for IPsec VPN
+#            policies and peers so that a site-to-site
+#            VPN connection can be made even for sites
+#            with dynamic IP addresses.
+#   License: MIT
+#
+#
+#   How to Use:
+#
+#       1. For each IPsec peer and policy you want
+#          this script to resolve, add this comment:
+#
+#          dns-vpn,target.domain.name.com
+#
+#       2. Run this script on a schedule.
+#
+#       3. That's it.
+#
+#    This script only modifies IPsec peers and policies
+#    that have a specific comment (see above).
+#    For each policy, the SA Dst. Address is changed to
+#    the IP of the domain name specified in the comment.
+#    For each peer, the Address is changed to the IP of
+#    the domain name specified in the comment.
+#
+#    Requires the read, write, policy, and test script
+#    permissions policy.
+#
+##########################################################
+{
+    :global xxDNSVPNfuncSubstitute do={
+        # FUNCTION to substitute characters in a string
+        # arguments:
+        # $1 is the string to subtitute
+        # $2 is the character to find
+        # $3 is the string to replace with
+        # returns the string with substitutions done
+
+        :local subbed ""
+        :for i from=0 to=([:len $1] - 1) do={
+            :local char [:pick $1 $i]
+            :if ($char = $2) do={
+                :set char $3
+            }
+            :set subbed ($subbed . $char)
+        }
+        :return $subbed
+    }
+
+
+    :global xxDNSVPNfuncComment2Host do={
+        # FUNCTION to get the hostname from a dns-vpn comment
+        # arguments:
+        # $1 is the comment
+        # returns the hostname with any spaces removed
+
+        :global xxDNSVPNfuncSubstitute
+
+        # converts comma-separated values in a string to an array
+        # and then we'll just take the second element of that array
+        :local domainName ([:toarray $1]->1)
+
+        # remove any spaces from the domain name
+        :set domainName [$xxDNSVPNfuncSubstitute $domainName " " ""]
+
+        :log debug "Got '$domainName' from the comment '$1'"
+        :return $domainName
+    }
+
+
+    # Work with only the peers and policies we are supposed to
+    :local policies [/ip ipsec policy find comment~"^dns-vpn,"]
+    :local peers [/ip ipsec peer find comment~"^dns-vpn,"]
+
+    # change SA Destination Address for all policies to the IP of the
+    # domain name in their comment
+    :foreach policy in=$policies do={
+        :local policyComment [/ip ipsec policy get $policy comment]
+        :local domainName [$xxDNSVPNfuncComment2Host $policyComment]
+        :local ipAddr [:resolve $domainName]
+        :local curAddr [/ip ipsec policy get $policy sa-dst-address]
+        :if ($curAddr != $ipAddr) do={
+            /ip ipsec policy set $policy sa-dst-address=$ipAddr
+            :log info "DNS-VPN: IPsec policy '$policyComment' was changed from $curAddr to $ipAddr"
+        }
+    }
+    
+    # change the Peer Address for all peers to the IP of the domain
+    # name in their comment
+    :foreach peer in=$peers do={
+        :local peerComment [/ip ipsec peer get $peer comment]
+        :local domainName [$xxDNSVPNfuncComment2Host $peerComment]
+        :local curAddr [/ip ipsec peer get $peer address]
+        
+        # for some reason, IPsec peer's address value is an IP prefix as a string
+        # this chops off the /32 at the end, giving us just the IP
+        :if ($curAddr ~ "/[[:digit:]]+\$") do={
+            :set curAddr [:pick $curAddr 0 [:find $curAddr "/"]]
+        }
+        
+        :local ipAddr [:resolve $domainName]
+        :if ($curAddr != $ipAddr) do={
+            /ip ipsec peer set $peer address=$ipAddr
+            :log info "DNS-VPN: IPsec peer '$peerComment' was changed from $curAddr to $ipAddr"
+        }
+    }
+    
+    # clean up our globals (delete any global variable starting with "xxDNSVPN...")
+    /system script environment remove [find name~"^xxDNSVPN"]
+}
